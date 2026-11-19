@@ -1,0 +1,490 @@
+experiments:
+
+
+
+
+
+
+
+#========mcar
+- name: "exper370"
+  summary:
+    description: "energy MNAR| Seed 1"
+  injected_dataset_path: "/hri/storage/user/lmangam/test/datasets/energy/mcar/energy_mcar_seed_1.csv"
+
+  missing_rate: 0.824
+
+- name: "exper371"
+  summary:
+    description: "energy MNAR| Seed 90"
+  injected_dataset_path: "/hri/storage/user/lmangam/test/datasets/energy/mcar/energy_mcar_seed_90.csv"
+  missing_rate: 0.855
+
+- name: "exper372"
+  summary:
+    description: "energy MNAR| Seed 173"
+  injected_dataset_path: "/hri/storage/user/lmangam/test/datasets/energy/mcar/energy_mcar_seed_173.csv"
+  missing_rate: 0.818
+
+
+- name: "exper373"
+  summary:
+    description: "energy MNAR| Seed 1"
+  injected_dataset_path: "/hri/storage/user/lmangam/test/datasets/energy/mcar/energy_mcar_seed_193.csv"
+
+  missing_rate: 0.824
+
+- name: "exper374"
+  summary:
+    description: "energy MNAR| Seed 90"
+  injected_dataset_path: "/hri/storage/user/lmangam/test/datasets/energy/mcar/energy_mcar_seed_210.csv"
+  missing_rate: 0.855
+
+- name: "exper375"
+  summary:
+    description: "energy MNAR| Seed 173"
+  injected_dataset_path: "/hri/storage/user/lmangam/test/datasets/energy/mcar/energy_mcar_seed_310.csv"
+  missing_rate: 0.818
+
+
+
+
+sampling:
+  enabled: false
+  sample_size: 500
+  max_seed: 1000
+
+autoschema_constraints:
+  enabled: false
+
+missingness:
+  enabled: false #true or false
+  mechanism: "MNAR"   # MCAR | MAR | MNAR
+  missing_rate: 0.1219 #determines missing percentage(common for 3 mechanisms)
+  seed: 90
+  mean: 0.75  # Only used for MAR/MNAR, use null
+  variance: null
+  mode: "GM" #  # GM | min | max (for MNAR and MAR we also have min and max or Gm)
+  n_workers: None
+
+chooseimputation method:
+  llm:
+    enabled: true
+  mean_mode:
+    enabled: true 
+
+model:
+  use_local_llm: false
+  name: "meta-llama/Llama-3.1-8B-Instruct" 
+  torch_dtype: auto
+  device_map: auto
+  trained_adapter: false
+  adapter_path: "/hri/storage/user/lmangam/test/adapter.pt" 
+  use_adapter: false
+  adapter_bottleneck: 256
+
+api:
+  base_url: "http://localhost:8001/v1"
+  model: "Gemma-4-31B-IT"
+
+
+inference:
+  batching:
+    enabled: true
+    batch_size: 10
+    max_workers: 5
+structured_output:
+  method: lmfe  # lmfe | outlines
+
+generation:
+  max_new_tokens: 250
+  do_sample: false 
+  temperature: null #the model becomes more confident
+  top_p: null
+  top_k: null
+  
+outlinestoken:
+  max_new_tokens: 300
+
+dataset:
+  path: "/hri/storage/user/lmangam/test/datasets/energy/energy.csv"
+
+injected_dataset:
+  enabled: true
+  mechanism: "MCAR"
+
+
+datasetanalysis:
+  enabled: true
+
+
+#if  llm_input_complete_row_fraction=1 ;Process all rows
+#if  llm_input_complete_row_fraction=between 0 and 1 ;all misssing rows along with [alpha * total complete rows](for refernce)
+#if  llm_input_complete_row_fraction=0 ;send only missing rows
+# number = process only specified rows
+#"all" = process all selected rows
+                                   
+
+imputation:
+  llm_input_complete_row_fraction: 0
+  max_rows: all
+
+Rag_retrieval:
+  enabled: true
+  embedding_model: "Qwen/Qwen3-Embedding-0.6B" 
+  chunk_size:  1000
+  chunk_overlap: 200
+  rag_prompt: |  
+  
+                  # RECORD
+
+                  Available features and values:
+                  {row_text}
+                  ## RETRIEVAL TARGET
+                  Missing features:
+                  {missing_columns}
+                  {missing_columns} is the PRIMARY and DOMINANT retrieval target.
+                  Retrieve only knowledge from the provided knowledge base that may help understand or estimate {missing_columns} using the observed information in {row_text}.
+                  ## RETRIEVAL INSTRUCTIONS
+                  1. Search primarily for passages that explicitly discuss {missing_columns}.
+                  2. Retrieve direct or indirect relationships between {missing_columns} and the AVAILABLE features in {row_text}.
+                  3. Prioritize passages where {missing_columns} and relevant observed features are discussed together.
+                  4. Retrieve relationships, dependencies, conditions, constraints, ranges, thresholds, patterns, or associations involving {missing_columns} when they are explicitly supported by the knowledge base.
+                  5. Prioritize information relevant to the actual observed values or categories in {row_text}.
+                  6. Use information about an observed feature only when it provides evidence about {missing_columns}.
+                  7. Give highest relevance to passages that help distinguish plausible values of {missing_columns}.
+                  ## RESTRICTIONS
+                  * Do NOT assume or predefine relationships between features.
+                  * Do NOT infer relationships from general knowledge.
+                  * Do NOT introduce rules, thresholds, ranges, or dependencies that are not present in the provided knowledge base.
+                  * Do NOT retrieve information merely because it matches an observed feature.
+                  * Do NOT retrieve standalone descriptions of observed features unless they establish a relationship with {missing_columns}.
+                  * Do NOT retrieve relationships unrelated to {missing_columns}.
+                  * Do NOT predict or impute {missing_columns}.
+                  * Use the knowledge base only as supporting contextual evidence for imputation.
+
+                  ## RETRIEVAL PRIORITY
+                  {missing_columns} + relationships with observed features >>> rules/constraints/patterns explicitly involving {missing_columns} >>> other directly relevant supporting information.
+                  Return only knowledge from the provided knowledge base that is directly useful for understanding {missing_columns} in relation to the observed information in {row_text}.
+                                                    
+                                      
+                                      
+                                                                  
+  top_k_dense: 15
+  top_k_bm25: 7
+  rerank_top_n: 3
+  #weights for rrf
+  dense_rrf_weight: 0.7     #dense_rrf_weight = 0.0 → 100% BM25 ,dense_rrf_weight = 0.5 → 50% BM25 + 50% Dense ,dense_rrf_weight = 1.0 → 100% Dense
+  hyde_json output: false
+  document_folder: "/hri/storage/user/lmangam/test/outputs/Rag_documents5"
+
+web_search:
+  enabled: false
+  query: |    
+            "Retrieve comprehensive evidence-based medical knowledge relevant to maternal health during pregnancy that may support
+            LLM-based imputation of missing values. Include clinical guidelines, physiological relationships, normal and abnormal ranges, 
+            diagnostic criteria, maternal risk factors, and medically established correlations among maternal age, systolic blood pressure, 
+            diastolic blood pressure, blood glucose, body temperature, heart rate, and maternal risk level."
+  
+  max_results: 5
+
+gower_retrieval:
+  enabled:  true
+  top_k: 15
+
+hamming_retrieval:
+  enabled: false
+  top_k: 5
+
+random_missing_rows:
+  enabled: false
+  num_rows: 10                          
+#we can choose any of metrics 
+
+
+evaluation:
+  enabled: true
+  numerical_metrics:
+    - rmse
+    - mae
+  categorical_metrics:
+    - accuracy
+    - macro_f1
+  normalize_numerical: true
+  mixed_metrics:
+    - gower
+
+export:
+  enabled: true
+  output_dir_path: "/hri/storage/user/lmangam/test/outputs"
+
+prompting:
+
+  prompts:
+
+    - name:  Imputation with LLM + Rag +gower(10)+cleveland_mnar_seed_90+change in prompt+chnaging in juding prompt+change in docuemnt parsing+pyampute injected 
+      mode: plain
+
+      prompt: | 
+
+
+                You are an expert data analyst specializing in tabular data and missing-value imputation.
+                  Your task is to impute **only the missing values** while keeping all observed values unchanged.
+
+                  #Before answering, reason carefully using the available evidence in this priority:
+
+                    1. **Provided context** — use retrieved domain knowledge, metadata, feature-specific information, policies, rules, relationships, constraints, and relevant information.
+                    2. **Neighboring similar records** — use the provided similar rows to identify relevant patterns.
+                    3. **Record-level reasoning** — consider relationships and dependencies among features. Infer multiple missing values jointly when necessary.
+                    4. **General/domain knowledge** — use your own knowledge only as a **last resort** when the provided evidence is insufficient.
+
+                    When evidence conflicts, prefer the information most relevant and strongly supported by the current record and context.
+                    Perform a final consistency check and output **only the most plausible completed record** in the required structured format.
+
+                  #You will receive:
+                    1. The original incomplete record.
+                    2. Retrieved context, which may contain domain knowledge, metadata, feature-specific information, relationships, constraints, rules, and other relevant information.
+                    3. Neighboring similar records from the dataset.
+
+                  # Internal Reasoning
+                  Before answering, reason carefully step-by-step internally.
+
+                  1. Identify exactly which values are missing and which are observed.
+                  2. Analyze the observed values and determine how they relate to each missing feature.
+                  3. Examine the neighboring similar rows and identify patterns relevant to the missing feature(s).
+                  4. Use the neighboring similar rows as reference evidence for imputation, not as values to copy directly.
+                  5. Examine the retrieved context and identify information relevant to the missing feature(s).
+                  7. Use the retrieved context and neighboring similar rows as supporting evidence, not as ground truth.
+                  8. Use the retrieved domain knowledge, metadata, feature-specific information, relationships, constraints, and rules to support known relationships among the features.
+                  9. Combine evidence from the current record, the neighboring similar rows, retrieved domain knowledge, metadata, feature-specific information, relationships, and constraints to infer the most plausible record-specific value.
+                  10. Do not blindly copy a neighboring similar row or mechanically calculate the mean, median, or mode.
+                  11. If multiple values are missing, infer them jointly so they remain mutually consistent.
+                  12. Check relationships among all features.
+                  13. Verify that the completed record is internally consistent and appropriate for the observed profile and retrieved context.
+                  14. Reconsider any questionable prediction internally before producing the final answer.
+
+                  ## Evidence Priority
+
+                  Current record's observed values > relevant relationships among features > retrieved domain knowledge, metadata, and feature-specific information > neighboring similar records.
+
+                  ## Rules
+
+                  * Never modify originally observed values.
+                  * Predict only originally missing values.
+                  * Use neighboring similar rows as reference evidence, not ground truth.
+                  * Use retrieved domain knowledge, metadata, feature-specific information, relationships, constraints, and rules to understand the features and their dependencies.
+                  * Do not blindly copy or average values from neighboring similar records.
+                  * Prefer record-specific evidence over generic assumptions.
+                  * Do not invent unsupported information.
+                  * Ensure all predicted values are realistic and mutually consistent.
+                  * Ensure all predicted features are consistent with the overall record and retrieved context.
+                  * Perform all reasoning internally and do not output your reasoning.
+
+                  # Original incomplete record
+                  {row}
+
+                  # CONTEXT
+                  Retrieved domain knowledge, metadata, feature-specific information, relationships, constraints, rules, and other relevant information:
+                  {rag_context}
+
+                  # Neighboring similar rows:
+                  {gower_context}
+
+                  Return only one complete valid JSON object containing all features.
+
+
+    - name: Juding the prediciton
+
+      mode: plain
+
+      prompt: |
+        You are an expert data analyst specializing in tabular data and missing-value imputation. Your task is to independently evaluate and refine an imputed record.
+        Use the available evidence to determine the most plausible values for the missing features while preserving all originally observed values.
+
+        You will receive:
+
+        1. The original incomplete record.
+        2. The previous prediction.
+        3. Retrieved context containing relevant domain knowledge, metadata, feature-specific information, relationships, constraints, rules, and other relevant information.
+        4. Neighboring similar records from the dataset.
+
+        Use the original incomplete record, retrieved context, and neighboring similar records as the primary evidence for independently evaluating the previous prediction. Consider relationships among the observed and missing features and reason jointly when multiple values are missing. Use your general knowledge only as a last resort when the available evidence is insufficient.
+
+        ## Your Task
+
+        Judge whether the imputed values in the previous prediction are the most plausible values supported by the available evidence, rather than merely whether they are possible or valid.
+
+        Before answering, reason carefully and internally:
+
+        1. Identify exactly which values are missing and which are observed.
+        2. Analyze the observed values and determine how they relate to each missing feature.
+        3. For each originally missing feature, independently determine the most plausible value using the original record, retrieved context, feature-specific information, relationships, constraints, and neighboring similar records.
+        4. Perform this independent assessment before deciding whether the previous prediction should be retained.
+        5. Compare the independently inferred value for each missing feature with the corresponding value in the previous prediction.
+        6. Evaluate whether each imputed numerical value is well supported by the available evidence and whether another realistic value is better supported.
+        7. Evaluate whether each imputed categorical value is well supported by the available evidence and whether another valid category is better supported.
+        8. Use neighboring similar records as reference evidence and examine whether the previous prediction is consistent with relevant local patterns.
+        9. Use retrieved domain knowledge, metadata, feature-specific information, relationships, constraints, and rules to evaluate the previous prediction.
+        10. Do not blindly accept the previously predicted values simply because they are plausible.
+        11. Distinguish between a value that is merely plausible and a value that is the most strongly supported by the available evidence.
+        12. If the evidence supports another value more strongly than the previous prediction, replace the previous prediction for that missing feature.
+        13. If multiple values are missing, infer and evaluate them jointly so they remain mutually consistent.
+        14. Check relationships among all features.
+        15. Verify that the completed record is internally consistent and appropriate for the observed profile and retrieved context.
+        16. Reconsider any questionable prediction internally before producing the final answer.
+
+        ## Evidence Priority
+
+        Current record's observed values > relevant relationships among features > retrieved domain knowledge, metadata, and feature-specific information > neighboring similar records > previous prediction.
+
+        ## Rules
+
+        * Never modify originally observed values.
+        * Modify only originally missing features.
+        * Treat the previous prediction as a candidate prediction to evaluate, not as ground truth.
+        * Do not give the previous prediction preferential treatment merely because it was generated earlier.
+        * Do not blindly accept predicted values.
+        * Do not change a prediction merely to produce a different answer.
+        * Keep a previous prediction when it remains the value most strongly supported by the available evidence.
+        * Change a previous prediction when another value is more strongly supported by the available evidence.
+        * Use neighboring similar rows as reference evidence, not ground truth.
+        * Use retrieved domain knowledge, metadata, feature-specific information, relationships, constraints, and rules to understand the features and their dependencies.
+        * Do not blindly copy or average values from neighboring similar records.
+        * Prefer record-specific relationships and observed evidence.
+        * Do not invent unsupported information.
+        * Ensure the final record is realistic and internally consistent.
+        * Perform all reasoning internally and do not output your reasoning.
+
+        Original incomplete record:
+        {row}
+
+        Previous prediction:
+        {prediction_1}
+
+        # CONTEXT
+        Retrieved domain knowledge, metadata, feature-specific information, relationships, constraints, rules, and other relevant information:
+        {rag_context}
+
+        # Neighboring similar rows:
+        {gower_context}
+
+        After independently evaluating every originally missing feature, compare the evidence-supported value with the previous prediction. Preserve a predicted value when it remains the most strongly supported value. Replace it only when another value is better supported by the available evidence.
+
+        Return only one complete valid JSON object containing all features, with no reasoning, explanation, Markdown, or additional text.
+
+                  
+                                
+              
+    
+
+           
+  validation_retry:
+      mode: plain
+          
+      prompt: |
+
+      
+        You are an expert data analyst specializing in tabular data and missing-value imputation.
+        Original incomplete record:
+        {row}
+
+        Previous prediction:
+        {prediction}
+
+        The previous prediction did not satisfy the required validation criteria. Carefully review and correct it to produce a complete, valid, and logically consistent record.
+        Before answering, reason internally about the observed values and relationships among the features.
+
+        Rules:
+        - Never modify values observed in the original record.
+        - Correct only missing, invalid, incomplete, or implausible predicted values.
+        - Preserve predicted values that are already valid and plausible.
+        - Impute every originally missing feature.
+        - Ensure all features are present.
+        - Ensure predicted values are mutually consistent with relationships among the features and available domain knowledge.
+        - Use general knowledge only when necessary and avoid unsupported assumptions.
+        - Do not output your reasoning.
+        - Return only one complete valid JSON object.
+        - Do not include explanations, Markdown, or additional text.
+
+
+
+
+
+
+                  
+hyde:
+  enabled: true
+  prompt:
+
+    mode: plain
+    
+    prompt: | 
+  
+       You are generating a hypothetical document for Retrieval-Augmented Generation (HYDE).
+        ## Available Record
+        {row_text}
+        ## Missing Features
+        {missing_columns}
+        ## Task
+        Generate ONE short hypothetical retrieval document focused specifically on {missing_columns}.
+        The primary objective is to generate semantic knowledge describing how {missing_columns} may relate to the observed features and values in {row_text}, and feature-specific information useful for understanding {missing_columns}.
+        {missing_columns} must remain the PRIMARY and DOMINANT subject throughout the generated document.
+
+        ## Internal Reasoning
+        1. Focus first on {missing_columns}.
+        2. Inspect the observed features and values in {row_text}.
+        3. Determine which observed features may provide useful evidence about {missing_columns}.
+        4. Identify possible direct or indirect relationships between {missing_columns} and those relevant observed features.
+        5. Identify feature-specific information that may be useful for understanding {missing_columns}.
+        6. Ignore observed features that do not provide useful information about {missing_columns}.
+        7. Generate semantic text describing only relationships and feature-specific information useful for understanding {missing_columns}.
+
+        ## Retrieval Keywords
+        Use terminology strongly centered on {missing_columns}.
+        Include:
+
+        * The exact feature name(s) {missing_columns}.
+        * Semantically related terminology for {missing_columns} when appropriate.
+        * Observed feature names only when describing their relationship with {missing_columns}.
+        * Observed categorical or numerical values only when they provide useful context for {missing_columns}.
+        * Feature-specific information related to {missing_columns} when appropriate.
+        * Relevant terms such as relationship, association, dependency, condition, constraint, range, threshold, status, eligibility, or pattern when useful.
+
+        Use {missing_columns} explicitly and naturally throughout the document to strengthen semantic retrieval.
+
+        ## Generation Rules
+
+        * Generate a semantic retrieval document, NOT a completed record.
+        * Focus almost entirely on {missing_columns}.
+        * Every sentence must provide information useful for retrieving knowledge about {missing_columns}.
+        * Include information useful for retrieving both relationships involving {missing_columns} and feature-specific information about {missing_columns}.
+        * Discuss observed features ONLY when connecting them to {missing_columns}.
+        * Do NOT describe observed features independently.
+        * Do NOT discuss relationships only among observed features.
+        * Do NOT summarize the entire record.
+        * Do NOT introduce unrelated features.
+        * Do NOT generate broad or generic pension information.
+        * Do NOT predict or impute {missing_columns}.
+        * Do NOT provide a final value for {missing_columns}.
+        * Do NOT invent unsupported relationships or rules.
+        * Use actual observed values when they improve semantic matching with {missing_columns}.
+        * Keep the document under 200 tokens.
+
+        ## Retrieval Priority
+        {missing_columns} and feature-specific information >>> {missing_columns} and its relationships with observed values >>> conditions, constraints, ranges, thresholds, dependencies, and patterns directly involving {missing_columns} >>> everything else.
+
+        Return only the hypothetical retrieval document with no reasoning, explanation, Markdown, or additional text.
+
+
+
+
+# hyde:
+
+#   prompt:
+
+#     mode: plain
+
+#     prompt: |
+#       Generate one realistic patient record...
+#       {row_text}
+#       {missing_columns}

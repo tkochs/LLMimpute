@@ -1,16 +1,51 @@
 [project]
-name = "llm-imputation"
+name = "llm-format-test"
 version = "0.1.0"
-description = "LLM based imputation for Missing Not At Random Data (MNAR)"
+description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
-    "matplotlib>=3.10.9",
-    "numpy>=2.4.6",
-    "polars>=1.41.1",
+    "accelerate>=1.14.0",
+    "chromadb",
+    "ddgs>=9.14.4",
+    "docling>=2.112.0",
+    "duckduckgo-search>=8.1.1",
+    "gouda-cheese>=0.1.10",
+    "gower>=0.1.2",
+    "langchain",
+    "langchain-chroma",
+    "langchain-cohere>=0.6.0",
+    "langchain-community",
+    "langchain-core",
+    "langchain-huggingface",
+    "langchain-tavily>=0.2.18",
+    "langchain-text-splitters",
+    "liac-arff>=2.5.0",
+    "lm-format-enforcer>=0.11.3",
+    "matplotlib>=3.11.0",
+    "openai>=3.3.0",
+    "openpyxl>=3.1.5",
+    "outlines>=1.3.0",
+    "pandas>=3.0.3",
+    "pyampute>=0.0.3",
     "pydantic>=2.13.4",
+    "pymupdf>=1.28.0",
+    "pymupdf4llm>=1.28.0",
+    "pypdf",
+    "pyyaml>=6.0.3",
+    "rank-bm25>=0.2.2",
     "seaborn>=0.13.2",
-    "swiss-cheese>=0.1.5",
+    "sentence-transformers",
+    "swiss-cheese>=0.1.6",
+    "sympy>=1.14.0",
     "torch>=2.12.0",
-    "transformers>=5.9.0",
+    "tqdm>=4.68.3",
+    "transformers==4.56.0",
+    "unsloth>=2026.3.11",
+    "unstructured[all-docs]",
+]
+
+[tool.uv.workspace]
+members = [
+    "hyperimpute",
 ]
