@@ -481,10 +481,8 @@ class LLMModel:
 
         with torch.inference_mode():
             formatted_prompt = prompt.strip()
-            # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ NameError: `formatted_prompt_llm` is undefined -> should be `formatted_prompt`
-            result = self.outline_model(formatted_prompt_llm, self.schema_model, max_new_tokens=self.tokens_for_outlines)
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ check: outlines >= 1.0 returns a JSON *string* here, which has no .model_dump_json()
-        return result.model_dump_json()
+            result = self.outline_model(formatted_prompt, self.schema_model, max_new_tokens=self.tokens_for_outlines)
+        return result
 
     # <--------------------------- API call ------------------------------------->
 
@@ -531,24 +529,22 @@ class LLMModel:
             return self._generate_hyde_api(prompt)
 
     def _generate_hyde_local(self, prompt):
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ max_new_tokens=200 hard-coded; temperature=0.0 with do_sample=False triggers HF warnings;
-        #          the HyDE call is not counted in prompt_history 
         inputs = self.tokenizer(prompt, return_tensors="pt",).to(self.model.device)
         with torch.inference_mode():
             if self.json_output:
                 outputs = self.model.generate(
                     **inputs,
                     prefix_allowed_tokens_fn=self.prefix_function,
-                    max_new_tokens=200,
-                    do_sample=False,
-                    temperature=0.0,
+                    max_new_tokens=200, # hard-coded max-new token limit
+                    do_sample=False, # Deterministic result
+                    temperature=0.0, # Deterministic result
                     pad_token_id=self.tokenizer.eos_token_id,)
             else:
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=200,
-                    do_sample=False,
-                    temperature=0.0,
+                    max_new_tokens=200, # hard-coded max-new token limit
+                    do_sample=False, # Deterministic result
+                    temperature=0.0, # Deterministic result
                     pad_token_id=self.tokenizer.eos_token_id,)
 
         return self.tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True,).strip()
@@ -586,7 +582,6 @@ class LLMModel:
             return response.output_text.strip()
 
     # <--------------------------- staged prompting + retry -------------------->
-    # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ print() of every prompt; one failing LLM call raises and aborts the whole transform()
     def _generate_prompting(self, generator, row, row_index=None, rag_context="", gower_context=""):
 
         self.predictions = {}
@@ -624,7 +619,7 @@ class LLMModel:
             print(final_prediction)
         attempts = 0
         validated = self._validate_and_dump(final_prediction)
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ 3 retries hard-coded -> max_retries argument
+        # TODO: Make max_retries an argument for the user
         while validated is None and attempts < 3:
             retry_prompt = self.prepare_prompt(stage=self.validation_retry_prompt, row=row, prediction=final_prediction,
                                                rag_context=rag_context, gower_context=gower_context, predictions=self.predictions,)
