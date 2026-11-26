@@ -7,14 +7,13 @@ Where each piece comes from:
     Retriever         <- grower_retrival.py
     WebSearch, DocumentLoader, EmbeddingModel, VectorDatabase, HybridRAG <- ragpipeline/
     DEFAULT_* prompts              <- configfiles/config27.yaml
-
-Every line starting with  # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$  still needs touching up.
 """
 
 import importlib.util
 import json
 import keyword
 import re
+import os
 import sys
 import time
 import uuid
@@ -72,9 +71,10 @@ class LLMImputer(TransformerMixin, BaseEstimator):
         temperature=None,                                 
         top_p=None,                                       
         top_k=None,                                       
-        outlines_max_new_tokens=300,                      
-        batching=True,                                    
-        batch_size=10,                                    
+        outlines_max_new_tokens=300,
+        # EXPERIMENTAL (disabled): batching, see LLMModel.generate_structured_batch
+        # batching=True,
+        # batch_size=10,
         # --- prompts ------------------------------------
         prompts=None,                                     
         validation_retry_prompt=None,                     
@@ -97,6 +97,7 @@ class LLMImputer(TransformerMixin, BaseEstimator):
         hyde=True,                                        
         hyde_prompt=None,                                 
         hyde_json_output=False,                           
+        rag_device="cpu",
         # web_search=False,                                 
         # websearch_query=None,                             
         # websearch_max_results=5,                          
@@ -119,8 +120,8 @@ class LLMImputer(TransformerMixin, BaseEstimator):
         self.top_p = top_p
         self.top_k = top_k
         self.outlines_max_new_tokens = outlines_max_new_tokens
-        self.batching = batching
-        self.batch_size = batch_size
+        # self.batching = batching
+        # self.batch_size = batch_size
         self.prompts = prompts
         self.validation_retry_prompt = validation_retry_prompt
         self.llm_input_complete_row_fraction = llm_input_complete_row_fraction
@@ -177,7 +178,7 @@ class LLMImputer(TransformerMixin, BaseEstimator):
         self.schema_model_ = SchemaManager.create(generator, self.run_id_)
         # original column name -> schema field name (clean_column_name rewrites e.g. "blood pressure" -> "blood_pressure");
         # the LLM answers with the schema field names, so results are looked up through this table
-        self.schema_field_names_ = {col: SchemaGenerator.clean_column_name(col) for col in X.columns}
+        self.schema_field_names_ = SchemaGenerator.field_names(X.columns)
 
         # RAG index 
         if self.rag_retrieval or self.hyde:
@@ -190,7 +191,7 @@ class LLMImputer(TransformerMixin, BaseEstimator):
                                   # websearch_max_results=self.websearch_max_results,
                                   # web search is disabled; HybridRAG/DocumentLoader still require these args
                                   enable_web_search=False, websearch_query=None, websearch_max_results=0,
-                                  alpha=self.dense_rrf_weight, persist_directory=Path(self.chroma_dir)/self.run_id_)
+                                  alpha=self.dense_rrf_weight, persist_directory=Path(self.chroma_dir)/self.run_id_, device=self.rag_device)
         if self.gower_retrieval:
             self.reference_ = X.copy()
             self.retriever_ = Retriever(top_k=self.gower_top_k, data=self.data_)
@@ -237,7 +238,7 @@ class LLMImputer(TransformerMixin, BaseEstimator):
                                                  max_rows=self.max_rows)
         llm_imputed_df = X.copy()
         self.failed_rows_.clear()
-        batch = []
+        # batch = []  # EXPERIMENTAL (disabled): batching
 
         for index, row in tqdm(rows_to_process.iterrows(), total=len(rows_to_process), desc="LLM Imputation",):
             row_json = self.data_.rowtojson(row)
@@ -295,21 +296,23 @@ class LLMImputer(TransformerMixin, BaseEstimator):
                 gower_context = self.data_.dataframetojson(similar_rows)
                 contexts["gower_context"] = gower_context
 
-            if self.batching:
-                batch.append(contexts,)
-                if len(batch) == self.batch_size:
-                    results = self.model_.generate_structured_batch(batch)
-                    for item, result in zip(batch, results):
-                        self._process_llm_result(rows_to_process, llm_imputed_df, index=item["row_index"], result=result)
-                    batch = []
-            else:
-                result = self.model_.generate_structured(**contexts)
-                self._process_llm_result(rows_to_process, llm_imputed_df, index=index, result=result)
+            # EXPERIMENTAL (disabled): batching
+            # if self.batching:
+            #     batch.append(contexts,)
+            #     if len(batch) == self.batch_size:
+            #         results = self.model_.generate_structured_batch(batch)
+            #         for item, result in zip(batch, results):
+            #             self._process_llm_result(rows_to_process, llm_imputed_df, index=item["row_index"], result=result)
+            #         batch = []
+            # else:
+            result = self.model_.generate_structured(**contexts)
+            self._process_llm_result(rows_to_process, llm_imputed_df, index=index, result=result)
 
-        if self.batching and batch:  # sending last remaining rows
-            results = self.model_.generate_structured_batch(batch)
-            for item, result in zip(batch, results):
-                self._process_llm_result(rows_to_process, llm_imputed_df, index=item["row_index"], result=result)
+        # EXPERIMENTAL (disabled): batching
+        # if self.batching and batch:  # sending last remaining rows
+        #     results = self.model_.generate_structured_batch(batch)
+        #     for item, result in zip(batch, results):
+        #         self._process_llm_result(rows_to_process, llm_imputed_df, index=item["row_index"], result=result)
 
         if self.failed_rows_:
             warnings.warn(f"{len(self.failed_rows_)} rows could not be imputed and keep NaN; see failed_rows_ "
@@ -328,8 +331,6 @@ class LLMImputer(TransformerMixin, BaseEstimator):
         row = rows_to_process.loc[index]
         missing_columns = row[row.isna()].index.tolist()
         # result keys are schema field names -> translate back to the original column names
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ still lost: names starting with a digit ("2nd visit" -> "_2nd_visit") are private in
-        #          pydantic and never in the schema; names that clean to the same field ("a b", "a_b") collide -> rows fail
         values = {col: result.get(self.schema_field_names_[col]) for col in missing_columns}
         if any(pd.isna(value) for value in values.values()):
             self.failed_rows_.append(index)
@@ -382,7 +383,6 @@ class LLMModel:
         self.verbose=verbose
 
         if self.use_local_llm:
-
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             self.model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype=self.torch_dtype, device_map=self.device_map,)
             self.original_embedding = self.model.model.embed_tokens
@@ -395,24 +395,20 @@ class LLMModel:
             self.outline_model = outlines.from_transformers(self.model, self.tokenizer,)
 
         else:
-
-            # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ api_key hard-coded to "EMPTY" (fine for a local vLLM server, not for hosted APIs) -> argument
-            self.client = OpenAI(base_url=api_base_url, api_key="EMPTY",)
+            self.client = OpenAI(base_url=api_base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY"))
             self.api_model = api_model
 
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ prints CUDA memory on every construction, even in API mode
-        for i in range(torch.cuda.device_count()):
-            print(f"GPU {i}: "
-                  f"allocated={torch.cuda.memory_allocated(i)/1024**3:.2f} GB, "
-                  f"reserved={torch.cuda.memory_reserved(i)/1024**3:.2f} GB")
+        if self.verbose:
+            for i in range(torch.cuda.device_count()):
+                print(f"GPU {i}: "
+                      f"allocated={torch.cuda.memory_allocated(i)/1024**3:.2f} GB, "
+                      f"reserved={torch.cuda.memory_reserved(i)/1024**3:.2f} GB")
 
     def prepare_prompt(self, stage, predictions=None, **kwargs):
-
         if predictions:
             kwargs.update(predictions)
         mode = stage["mode"]
         if mode == "plain":
-            # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ "plain" sends raw text without the chat template, also to local *Instruct* models
             return stage["prompt"].format(**kwargs)
 
         if mode == "chat":
@@ -426,22 +422,23 @@ class LLMModel:
                     "content": stage["user_prompt"].format(**kwargs),
                 },
             ]
-
-            # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ self.tokenizer only exists in local mode -> "chat" mode crashes with the API backend
-            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True,)
+            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True,) if self.use_local_llm else messages
         raise ValueError(f"Unknown mode: {mode}")
 
-    # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ sequential despite the name;. llmimputer.py had a commented-out
-    #          ThreadPoolExecutor version, but self.predictions is shared state -> not thread-safe as is
-    def generate_structured_batch(self, batch):
-
-        results = []
-
-        for contexts in batch:
-            result = self.generate_structured(**contexts)
-            results.append(result)
-
-        return results
+    # EXPERIMENTAL (disabled): batching. As written this was sequential (same speed as no batching).
+    # To re-enable with a real speed-up:
+    #   - make `self.predictions` a local variable in _generate_prompting (pass it to compare_predictions);
+    #     it is shared per-row state, so concurrent rows would overwrite each other's predictions
+    #   - API backend only: run rows through a ThreadPoolExecutor (vLLM batches concurrent requests);
+    #     local HF generate is not thread-safe, keep it sequential
+    #   - guard the token counters in _update_token_usage with a threading.Lock
+    # def generate_structured_batch(self, batch):
+    #     results = []
+    #     for contexts in batch:
+    #         result = self.generate_structured(**contexts)
+    #         results.append(result)
+    #
+    #     return results
 
     def generate_structured(self, row, row_index=None, rag_context="", gower_context=""):
 
@@ -510,21 +507,15 @@ class LLMModel:
     # <--------------------------- Validation ----------------------------------->
 
     def _validate_and_dump(self, data):
-
         try:
-
             # LM Format Enforcer -> JSON string
             if isinstance(data, str):
                 validated = self.schema_model.model_validate_json(data)
-
             # Outlines -> ProductRow object (or dict)
             else:
                 validated = self.schema_model.model_validate(data)
-
             return validated.model_dump()
-
         except ValidationError as e:
-
             print(f"Validation failed: {e}")
             return None
 
@@ -540,9 +531,8 @@ class LLMModel:
             return self._generate_hyde_api(prompt)
 
     def _generate_hyde_local(self, prompt):
-
         # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ max_new_tokens=200 hard-coded; temperature=0.0 with do_sample=False triggers HF warnings;
-        #          the HyDE call is not counted in prompt_history and the adapter state is whatever was set last
+        #          the HyDE call is not counted in prompt_history 
         inputs = self.tokenizer(prompt, return_tensors="pt",).to(self.model.device)
         with torch.inference_mode():
             if self.json_output:
@@ -596,14 +586,11 @@ class LLMModel:
             return response.output_text.strip()
 
     # <--------------------------- staged prompting + retry -------------------->
-
     # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ print() of every prompt; one failing LLM call raises and aborts the whole transform()
     def _generate_prompting(self, generator, row, row_index=None, rag_context="", gower_context=""):
 
         self.predictions = {}
-
         for call_index, stage in enumerate(self.refinement_prompts, start=1):
-
             prompt = self.prepare_prompt(stage=stage, row=row, rag_context=rag_context, gower_context=gower_context, predictions=self.predictions,)
             if self.verbose:
                 print("=" * 80)
@@ -711,9 +698,8 @@ class LLMModel:
 
 
 # =============================================================================
-#  Output schema                                  <- autoschema.py, schema_manager.py
+#  Output schema  
 # =============================================================================
-
 # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ generates Python *source code* and exec's it (see SchemaManager); build the model in memory
 #          with pydantic.create_model instead. Also: categories containing `"` break the generated code,
 #          bool columns count as numeric -> typed float, and the class name "ProductRow" is a leftover
@@ -734,10 +720,12 @@ class SchemaGenerator:
     def generate_schema(self) -> str:
 
         lines = ["from typing import Literal", "from pydantic import BaseModel, Field", "", "", "class ProductRow(BaseModel):", "", ]
+        field_names = self.field_names(self.df.columns)  # same mapping as LLMImputer.schema_field_names_
 
         for column in self.df.columns:
             series = self.df[column].dropna()
-            column_name = self.clean_column_name(column)
+            # column_name = self.clean_column_name(column)
+            column_name = field_names[column]
 
             # Numerical columns
             if pd.api.types.is_numeric_dtype(series):
@@ -771,12 +759,33 @@ class SchemaGenerator:
         # Convert column names into valid Python identifiers
 
         column = re.sub(r"\W+", "_", column.strip())  # replacing name space in columns with _
-        if column[0].isdigit():
-            column = "_" + column
+        # if column[0].isdigit():
+        #     column = "_" + column
+        # pydantic treats names starting with "_" as private attributes, not fields -> they would vanish from the
+        # schema. So prefix "f" instead (also covers empty names and names starting with a special character).
+        if not column or column[0].isdigit() or column[0] == "_":
+            column = "f" + column
         if keyword.iskeyword(column):
             column += "_"
 
         return column
+
+    @classmethod
+    def field_names(cls, columns) -> dict:
+        """Original column name -> unique schema field name.
+
+        Names that clean to the same identifier ("a b", "a_b") get a numeric suffix ("a_b", "a_b_2").
+        """
+        names, used = {}, set()
+        for column in columns:
+            name = base = cls.clean_column_name(column)
+            suffix = 2
+            while name in used:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            used.add(name)
+            names[column] = name
+        return names
 
 
 class SchemaManager:
@@ -868,11 +877,8 @@ class Datasetp:
 
 
 # =============================================================================
-#  Neighbouring rows                              <- grower_retrival.py
+#  Neighbouring rows # pure python is slow; vectorization might help otherwise call into a C/C++/rust api
 # =============================================================================
-
-# $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ pure-Python O(n * d) scan for every imputed row (vectorise with NumPy); the query row itself is
-#          part of `dataset` and always comes back as nearest neighbour (distance 0) -> exclude it
 class Retriever:
 
     def __init__(self, top_k, data):
@@ -967,7 +973,6 @@ class DocumentLoader:
 
     # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ errors per file are printed and skipped silently; an empty folder gives an empty index
     def load(self):
-
         documents = []
         pdf_chunks = []
         for file in self.pdf_path.iterdir():
@@ -1031,38 +1036,28 @@ class DocumentLoader:
 
 
 class EmbeddingModel:
-
-    def __init__(self, model_name):
-
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ device "cuda:0" and batch_size 16 hard-coded -> arguments (fails on CPU-only machines)
+    def __init__(self, model_name, device):
         self.embedding = HuggingFaceEmbeddings(model_name=model_name, encode_kwargs={"normalize_embeddings": True, "batch_size": 16},
-                                               model_kwargs={"device": "cuda:0"})
+                                               model_kwargs={"device": device})
         print("loaded embedding model")
 
 
 class VectorDatabase:
-
     def __init__(self, embedding_model, persist_directory, collection_name,):
-
         self.vector_store = Chroma(collection_name=collection_name, embedding_function=embedding_model,
                                    persist_directory=persist_directory,)
-
     def add_documents(self, documents):
         batch_size = 100
-
         for i in range(0, len(documents), batch_size):
             batch = documents[i:i + batch_size]
             self.vector_store.add_documents(batch)
 
-    # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ MMR fetch_k=20 / lambda_mult=0.8 and the 0.7 score threshold are hard-coded
+    # hard-coded values (might need to do hyperparam search at some point)
     def get_retriever(self, search_type, k):
-
         if search_type == "mmr":
             return self.vector_store.as_retriever(search_type=search_type, search_kwargs={"k": k, "fetch_k": 20, "lambda_mult": 0.8, },)
-
         elif search_type == "similarity_score_threshold":
             return self.vector_store.as_retriever(search_type="similarity_score_threshold", search_kwargs={"k": k, "score_threshold": 0.7, },)
-
         elif search_type == "similarity":
             return self.vector_store.as_retriever(search_type="similarity", search_kwargs={"k": k, },)
 
@@ -1073,44 +1068,38 @@ class VectorDatabase:
 class HybridRAG:
 
     def __init__(self, pdf_path, embedding_model, chunk_size, chunk_overlap, top_k_dense, top_k_bm25, rerank_top_n,
-                 enable_web_search, websearch_query, websearch_max_results, alpha, persist_directory="./chroma_db"):
+                 enable_web_search, websearch_query, websearch_max_results, alpha, persist_directory="./chroma_db", device="cuda:0"):
 
         self.loader = DocumentLoader(pdf_path, chunk_size, chunk_overlap, enable_web_search, websearch_query, websearch_max_results)
         self.chunks = self.loader.split()
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ reranker model "Qwen/Qwen3-Reranker-4B", device "cuda" and bfloat16 hard-coded -> arguments
-        self.reranker = CrossEncoder("Qwen/Qwen3-Reranker-4B", device="cuda", model_kwargs={"torch_dtype": torch.bfloat16})
+        # TODO: using different models than just Qwen
+        self.reranker = CrossEncoder("Qwen/Qwen3-Reranker-4B", device=device, model_kwargs={"torch_dtype": torch.bfloat16})
         print("loaded reranker")
 
         self.bm25_retriever = BM25Retriever.from_documents(self.chunks)  # builds its own inverted index
         self.bm25_retriever.k = top_k_bm25
-        embedding_model = EmbeddingModel(embedding_model)
+        embedding_model = EmbeddingModel(embedding_model, device)
         self.vector_db = VectorDatabase(embedding_model=embedding_model.embedding, persist_directory=persist_directory,
                                         collection_name="rag_collection",)
         self.vector_db.add_documents(self.chunks)  # converts into vectors and stores them
         retriever = self.vector_db.get_retriever(search_type="mmr", k=top_k_dense,)
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ prints the full CUDA memory summary on every construction
-        print(torch.cuda.memory_summary())
+        # print(torch.cuda.memory_summary())
         # Reciprocal Rank Fusion of dense and BM25 results
         self.hybrid_retriever = EnsembleRetriever(retrievers=[retriever, self.bm25_retriever], weights=[alpha, 1 - alpha])
         print("Created vector db succesfully")
         self.top_n = rerank_top_n
 
     def retrieve(self, retrieval_query, rerank_query):
-
         # Retrieve documents
         docs = self.hybrid_retriever.invoke(retrieval_query)
         if not docs:
             return []
-
         # Remove duplicates
         docs = list({doc.page_content: doc for doc in docs}.values())
-
         # Prepare text for reranker
         document_texts = [doc.page_content for doc in docs]
-
         # Rerank retrieved documents
         rankings = self.reranker.rank(query=rerank_query, documents=document_texts,)
-
         # Return Top-N
         return [docs[item["corpus_id"]] for item in rankings[:self.top_n]]
 
