@@ -1,14 +1,3 @@
-"""
-LLM-based missing-value imputation
-Where each piece comes from:
-    SchemaGenerator   <- autoschema.py
-    SchemaManager     <- schema_manager.py
-    Datasetp          <- data_processor.py   (only the methods the model uses)
-    Retriever         <- grower_retrival.py
-    WebSearch, DocumentLoader, EmbeddingModel, VectorDatabase, HybridRAG <- ragpipeline/
-    DEFAULT_* prompts              <- configfiles/config27.yaml
-"""
-
 import importlib.util
 import json
 import keyword
@@ -19,13 +8,14 @@ import time
 import uuid
 import warnings
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from pydantic import ValidationError
+from pydantic import Field, ValidationError, create_model
 from openai import OpenAI
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from lmformatenforcer import JsonSchemaParser
@@ -157,7 +147,6 @@ class LLMImputer(TransformerMixin, BaseEstimator):
             if self.chroma_dir is None:
                 raise ValueError("RAG is turned on but no chroma_dir is passed!")
         self.cleanup()
-        # replaces pipeline.py's experiment_id (= experiment name + uuid)
         self.run_id_ = uuid.uuid4().hex[:12]
         self.data_ = Datasetp()
 
@@ -174,11 +163,12 @@ class LLMImputer(TransformerMixin, BaseEstimator):
         # self.websearch_query_ = self.websearch_query if self.websearch_query is not None else DEFAULT_WEBSEARCH_QUERY
 
         # output schema 
-        generator = SchemaGenerator(X, enable_constraints=self.schema_constraints)
-        self.schema_model_ = SchemaManager.create(generator, self.run_id_)
+        # generator = SchemaGenerator(X, enable_constraints=self.schema_constraints)
+        # self.schema_model_ = SchemaManager.create(generator, self.run_id_)
         # original column name -> schema field name (clean_column_name rewrites e.g. "blood pressure" -> "blood_pressure");
         # the LLM answers with the schema field names, so results are looked up through this table
         self.schema_field_names_ = SchemaGenerator.field_names(X.columns)
+        self.schema_model_ = build_schema_model(X, self.schema_field_names_, self.schema_constraints)
 
         # RAG index 
         if self.rag_retrieval or self.hyde:
@@ -695,60 +685,24 @@ class LLMModel:
 # =============================================================================
 #  Output schema  
 # =============================================================================
-# $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ generates Python *source code* and exec's it (see SchemaManager); build the model in memory
-#          with pydantic.create_model instead. Also: categories containing `"` break the generated code,
-#          bool columns count as numeric -> typed float, and the class name "ProductRow" is a leftover
+def build_schema_model(df, field_names, enable_constraints=False):
+    fields = {}
+    for column in df.columns:
+        series = df[column].dropna()
+        name = field_names[column]
+        if pd.api.types.is_numeric_dtype(series):
+            dtype = int if pd.api.types.is_integer_dtype(series) else float
+            bounds = ({"ge": dtype(series.min()), "le": dtype(series.max())}
+                      if enable_constraints and len(series) else {})
+            fields[name] = (dtype, Field(..., **bounds))
+        else:
+            values = sorted(series.astype(str).unique())
+            fields[name] = (Literal[tuple(values)] if 0 < len(values) <= 30 else str, ...)
+    return create_model("ProductRow", **fields)
+
+
 class SchemaGenerator:
-    def __init__(self, dataframe: pd.DataFrame, enable_constraints=False):
-        self.df = dataframe
-        self.enable_constraints = enable_constraints
-
-    def save(self, output_file: str = "schema.py") -> None:
-        output_path = Path(output_file)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        schema = self.generate_schema()
-
-        with open(output_path, "w", encoding="utf-8") as file:
-            file.write(schema)
-
-    def generate_schema(self) -> str:
-
-        lines = ["from typing import Literal", "from pydantic import BaseModel, Field", "", "", "class ProductRow(BaseModel):", "", ]
-        field_names = self.field_names(self.df.columns)  # same mapping as LLMImputer.schema_field_names_
-
-        for column in self.df.columns:
-            series = self.df[column].dropna()
-            # column_name = self.clean_column_name(column)
-            column_name = field_names[column]
-
-            # Numerical columns
-            if pd.api.types.is_numeric_dtype(series):
-                # returns true if it is numeric
-                minimum = series.min()
-                maximum = series.max()
-                if pd.api.types.is_integer_dtype(series):
-                    dtype = "int"
-                else:
-                    dtype = "float"
-
-                if self.enable_constraints:
-                    lines.append(f"    {column_name}: {dtype} = Field(..., ge={minimum}, le={maximum})")
-                else:
-                    lines.append(f"    {column_name}: {dtype}")
-
-            else:  # Categorical columns
-
-                unique_values = sorted(series.astype(str).unique())
-                if len(unique_values) <= 30:
-                    literals = ", ".join(f'"{value}"' for value in unique_values)
-                    lines.append(f"    {column_name}: Literal[{literals}]")
-                else:
-                    lines.append(f"    {column_name}: str")
-            lines.append("")
-
-        return "\n".join(lines)
-
+    """Column-name helpers for the output schema (the code generation below is replaced by build_schema_model)."""
     @staticmethod  # no need to create object
     def clean_column_name(column: str) -> str:
         # Convert column names into valid Python identifiers
@@ -783,41 +737,10 @@ class SchemaGenerator:
         return names
 
 
-class SchemaManager:
-
-    # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ writes generated_schemas/<id>/schema.py into the *current working directory* of the user
-    @staticmethod
-    def create(generator, experiment_id):
-
-        schema_path = (
-            Path("generated_schemas")
-            / experiment_id
-            / "schema.py"
-        )
-
-        generator.save(str(schema_path))
-
-        module_name = f"schema_{uuid.uuid4().hex}"
-
-        spec = importlib.util.spec_from_file_location(
-            module_name,
-            schema_path
-        )
-
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-
-        return module.ProductRow
-
-
 # =============================================================================
-#  Row <-> text helpers                           <- data_processor.py (Datasetp, used methods only)
+#  Row <-> text helpers    
 # =============================================================================
-
-# $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ rename (e.g. serialize helpers); loaddataset and the pension-specific text helpers stay behind
 class Datasetp:
-
     def split_rows(self, df):
 
         missing_rows = df[df.isnull().any(axis=1)]
@@ -836,8 +759,7 @@ class Datasetp:
 
         else:
             n_complete = int(len(complete_rows) * alpha)
-            # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ random_state=42 hard-coded
-            sampled_complete = complete_rows.sample(n=min(n_complete, len(complete_rows)), random_state=42)
+            sampled_complete = complete_rows.sample(n=min(n_complete, len(complete_rows)), random_state=42) # TODO: Make hard coded value a parameter
             rows = pd.concat([missing_rows, sampled_complete])
             rows = rows.sort_index()
 
@@ -966,7 +888,6 @@ class DocumentLoader:
         self.converter = DocumentConverter()
         self.splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap, add_start_index=True)
 
-    # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ errors per file are printed and skipped silently; an empty folder gives an empty index
     def load(self):
         documents = []
         pdf_chunks = []
@@ -1113,19 +1034,13 @@ class HybridRAG:
 
 
 # =============================================================================
-#  Default prompts                                <- configfiles/config27.yaml (copied verbatim,
-#                                                    trailing whitespace trimmed)
+#  Default prompts      
 # =============================================================================
 # Placeholders filled with str.format:
 #   impute / judge stages : {row} {rag_context} {gower_context} 
 #                           {prediction_1}, {prediction_2}, ... (output of earlier stages)
 #   validation retry      : the above + {prediction}
 #   HyDE / RAG query      : {row_text} {missing_columns}
-#
-# $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ prompt content: impute prompt skips step 6 in its numbered list; stage names contain typos and
-#          experiment notes ("Juding the prediciton", "...cleveland_mnar_seed_90..."); the HyDE prompt says
-#          "Do NOT generate broad or generic pension information"; the web-search query is about maternal health
-#          -> make all of it domain-neutral. Literal { } in a user prompt would also break str.format
 
 DEFAULT_IMPUTE_PROMPT = """\
 
@@ -1156,14 +1071,14 @@ You are an expert data analyst specializing in tabular data and missing-value im
   3. Examine the neighboring similar rows and identify patterns relevant to the missing feature(s).
   4. Use the neighboring similar rows as reference evidence for imputation, not as values to copy directly.
   5. Examine the retrieved context and identify information relevant to the missing feature(s).
-  7. Use the retrieved context and neighboring similar rows as supporting evidence, not as ground truth.
-  8. Use the retrieved domain knowledge, metadata, feature-specific information, relationships, constraints, and rules to support known relationships among the features.
-  9. Combine evidence from the current record, the neighboring similar rows, retrieved domain knowledge, metadata, feature-specific information, relationships, and constraints to infer the most plausible record-specific value.
-  10. Do not blindly copy a neighboring similar row or mechanically calculate the mean, median, or mode.
-  11. If multiple values are missing, infer them jointly so they remain mutually consistent.
-  12. Check relationships among all features.
-  13. Verify that the completed record is internally consistent and appropriate for the observed profile and retrieved context.
-  14. Reconsider any questionable prediction internally before producing the final answer.
+  6. Use the retrieved context and neighboring similar rows as supporting evidence, not as ground truth.
+  7. Use the retrieved domain knowledge, metadata, feature-specific information, relationships, constraints, and rules to support known relationships among the features.
+  8. Combine evidence from the current record, the neighboring similar rows, retrieved domain knowledge, metadata, feature-specific information, relationships, and constraints to infer the most plausible record-specific value.
+  9. Do not blindly copy a neighboring similar row or mechanically calculate the mean, median, or mode.
+  10. If multiple values are missing, infer them jointly so they remain mutually consistent.
+  11. Check relationships among all features.
+  12. Verify that the completed record is internally consistent and appropriate for the observed profile and retrieved context.
+  13. Reconsider any questionable prediction internally before producing the final answer.
 
   ## Evidence Priority
 
