@@ -1,9 +1,7 @@
-import importlib.util
 import json
 import keyword
 import re
 import os
-import sys
 import time
 import uuid
 import warnings
@@ -485,6 +483,21 @@ class LLMModel:
 
     # <--------------------------- API call ------------------------------------->
 
+    def _api_generation_kwargs(self):
+        """The `generation` settings as Responses API arguments, with the same meaning as in model.generate."""
+        kwargs = {"max_output_tokens": self.max_new_tokens}
+        if not self.do_sample:
+            kwargs["temperature"] = 0.0  # greedy, like do_sample=False
+            return kwargs
+        # None -> argument left out -> the server's default (vLLM: the model's generation_config.json)
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        if self.top_p is not None:
+            kwargs["top_p"] = self.top_p
+        if self.top_k is not None:
+            kwargs["extra_body"] = {"top_k": self.top_k}  # not an OpenAI parameter, vLLM extension
+        return kwargs
+
     def _generate_api(self, prompt):
 
         response = self.client.responses.parse(
@@ -496,6 +509,7 @@ class LLMModel:
                 }
             ],
             text_format=self.schema_model,
+            **self._api_generation_kwargs(),
         )
 
         self._update_token_usage(response)
@@ -561,6 +575,8 @@ class LLMModel:
                     }
                 ],
                 text_format=self.schema_model,
+                max_output_tokens=200,  # same hard-coded settings as _generate_hyde_local
+                temperature=0.0,
             )
             self._update_token_usage(response)
 
@@ -576,6 +592,8 @@ class LLMModel:
                         "content": prompt,
                     }
                 ],
+                max_output_tokens=200,  # same hard-coded settings as _generate_hyde_local
+                temperature=0.0,
             )
             self._update_token_usage(response)
             return response.output_text.strip()

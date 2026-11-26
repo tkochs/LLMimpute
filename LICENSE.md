@@ -1,6 +1,6 @@
 BSD 3-Clause License
 
-Copyright (c) 2007-2026 Lokesh Mangamuri & Tim Kochs.
+Copyright (c) 2026 Lokesh Mangamuri & Tim Kochs.
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without

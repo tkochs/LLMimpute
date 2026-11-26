@@ -1,29 +1,5 @@
-"""Run imputation experiments from a YAML config: LLMImputer and/or the mean/mode baseline.
-
-Self-contained replacement for pipeline.py: it only imports src/model.py (when the LLM runs) and
-src/ampute.py (when missing values are generated), none of the old top-level modules.
-
-    python src/run_experiment.py configfiles/config27.yaml      # LLM + mean/mode
-    python src/run_experiment.py configfiles/baselines.yaml     # mean/mode baseline only
-    python src/run_experiment.py CONFIG --overwrite             # replace existing output folders
-
-Which methods run is set under `chooseimputation method:` in the config (llm / mean_mode).
-
-Same as pipeline.py:
-  * every entry of `experiments:` runs with its own name, summary and injected dataset;
-  * the same row selection, the same metrics, and the same output files in
-    <export.output_dir_path>/<name>/, plus one row per method in experiment_history.csv;
-  * the LLM is scored on the selected rows it did not fail on, mean/mode on all selected rows.
-
-Differences from pipeline.py:
-  * the config path is a command-line argument, and nothing is asked interactively: an existing output
-    folder is an error unless --overwrite is given (pipeline.py asked whether to overwrite or rename);
-  * pipeline.py features that LLMImputer no longer has (web_search, hamming_retrieval,
-    random_missing_rows, the model adapter) stop the experiment with an error when enabled;
-    inference.batching is ignored (it ran the rows one after another anyway);
-  * the statistics tables list columns in table order (pipeline.py used set order, which varies between runs);
-  * a run with only one method enabled works (pipeline.py needed both for its comparison table);
-  * the exit code is 1 if any experiment failed.
+"""
+Run imputation experiments from a YAML config: LLMImputer and/or the mean/mode baseline.
 """
 import argparse
 import copy
