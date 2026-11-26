@@ -18,6 +18,7 @@ import re
 import sys
 import time
 import uuid
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -96,9 +97,9 @@ class LLMImputer(TransformerMixin, BaseEstimator):
         hyde=True,                                        
         hyde_prompt=None,                                 
         hyde_json_output=False,                           
-        web_search=False,                                 
-        websearch_query=None,                             
-        websearch_max_results=5,                          
+        # web_search=False,                                 
+        # websearch_query=None,                             
+        # websearch_max_results=5,                          
         chroma_dir=None,
         # --- context: neighbouring rows -----------------
         gower_retrieval=True,                             
@@ -138,9 +139,9 @@ class LLMImputer(TransformerMixin, BaseEstimator):
         self.hyde = hyde
         self.hyde_prompt = hyde_prompt
         self.hyde_json_output = hyde_json_output
-        self.web_search = web_search
-        self.websearch_query = websearch_query
-        self.websearch_max_results = websearch_max_results
+        # self.web_search = web_search
+        # self.websearch_query = websearch_query
+        # self.websearch_max_results = websearch_max_results
         self.chroma_dir = chroma_dir
         self.gower_retrieval = gower_retrieval
         self.gower_top_k = gower_top_k
@@ -169,20 +170,26 @@ class LLMImputer(TransformerMixin, BaseEstimator):
                                          else DEFAULT_VALIDATION_RETRY_PROMPT)
         self.hyde_prompt_ = self.hyde_prompt if self.hyde_prompt is not None else DEFAULT_HYDE_PROMPT
         self.rag_prompt_ = self.rag_prompt if self.rag_prompt is not None else DEFAULT_RAG_PROMPT
-        self.websearch_query_ = self.websearch_query if self.websearch_query is not None else DEFAULT_WEBSEARCH_QUERY
+        # self.websearch_query_ = self.websearch_query if self.websearch_query is not None else DEFAULT_WEBSEARCH_QUERY
 
         # output schema 
         generator = SchemaGenerator(X, enable_constraints=self.schema_constraints)
         self.schema_model_ = SchemaManager.create(generator, self.run_id_)
+        # original column name -> schema field name (clean_column_name rewrites e.g. "blood pressure" -> "blood_pressure");
+        # the LLM answers with the schema field names, so results are looked up through this table
+        self.schema_field_names_ = {col: SchemaGenerator.clean_column_name(col) for col in X.columns}
 
         # RAG index 
         if self.rag_retrieval or self.hyde:
             self.rag_ = HybridRAG(pdf_path=self.document_folder, embedding_model=self.embedding_model,
                                   chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap,
                                   top_k_dense=self.top_k_dense, top_k_bm25=self.top_k_bm25,
-                                  rerank_top_n=self.rerank_top_n, enable_web_search=self.web_search,
-                                  websearch_query=self.websearch_query_,
-                                  websearch_max_results=self.websearch_max_results,
+                                  rerank_top_n=self.rerank_top_n,
+                                  # enable_web_search=self.web_search,
+                                  # websearch_query=self.websearch_query_,
+                                  # websearch_max_results=self.websearch_max_results,
+                                  # web search is disabled; HybridRAG/DocumentLoader still require these args
+                                  enable_web_search=False, websearch_query=None, websearch_max_results=0,
                                   alpha=self.dense_rrf_weight, persist_directory=Path(self.chroma_dir)/self.run_id_)
         if self.gower_retrieval:
             self.reference_ = X.copy()
@@ -210,16 +217,12 @@ class LLMImputer(TransformerMixin, BaseEstimator):
             json_output=self.hyde_json_output,
             verbose=self.verbose,
         )
+        # rows of the most recent transform() whose LLM output was unusable (they keep NaN).
+        # Created here and only cleared/appended in transform, so transform sets no attributes.
+        self.failed_rows_ = []
         self._is_fitted = True
         return self
 
-    # -------------------------------------------------------------------------
-    #
-    #  transform  <- pipeline.py: analyze_dataset(), run_llm_imputation()
-    # -------------------------------------------------------------------------
-    # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ per-call results are stored on self
-    #          (rows_to_process, llm_imputed_df, hyde_documents, retrieval_history,
-    #          failed_validation_indices) -> expose as prompt_log_ / failed_rows_ / token_usage_ etc.
     def transform(self, X):
         # input validation: same type and same columns (names and order) as seen in fit
         check_is_fitted(self)
@@ -230,15 +233,13 @@ class LLMImputer(TransformerMixin, BaseEstimator):
                              f"{list(self.feature_names_in_)}")
         #! input validation !#
 
-        self.rows_to_process = self.data_.select_rows(X, alpha=float(self.llm_input_complete_row_fraction),
-                                                      max_rows=self.max_rows)
-        self.llm_imputed_df = X.copy()
-        self.hyde_documents = []
-        self.retrieval_history = {}
-        self.failed_validation_indices = []
+        rows_to_process = self.data_.select_rows(X, alpha=float(self.llm_input_complete_row_fraction),
+                                                 max_rows=self.max_rows)
+        llm_imputed_df = X.copy()
+        self.failed_rows_.clear()
         batch = []
 
-        for index, row in tqdm(self.rows_to_process.iterrows(), total=len(self.rows_to_process), desc="LLM Imputation",):
+        for index, row in tqdm(rows_to_process.iterrows(), total=len(rows_to_process), desc="LLM Imputation",):
             row_json = self.data_.rowtojson(row)
             if self.verbose:
                 print("=" * 80)
@@ -267,8 +268,6 @@ class LLMImputer(TransformerMixin, BaseEstimator):
 
             if self.hyde:  # getting doc from llm
                 hyde_query = self.model_.generate_hyde(row_text=row_json, missing_columns=", ".join(missing_columns),)
-                self.hyde_documents.append({"row_index": index, "missing_columns": ", ".join(missing_columns),
-                                            "row": row_json, "hyde_document": hyde_query,})
                 if self.verbose:
                     print("=" * 80)
                     print("hypothetical document from LLm")
@@ -288,13 +287,11 @@ class LLMImputer(TransformerMixin, BaseEstimator):
                     print("=" * 80)
                     print(rag_context)
 
-            # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ dataframetojson returns a *list* of JSON strings; str.format renders it as a Python
-            #          list repr with escaped "\n" and quotes -> the LLM sees escaped JSON. Join the rows
-            #          (or dump one JSON array) before putting it into the prompt 
+            # OPTIONAL: FIX neighbours reach the LLM in slightly wrong format.
+            # Also sends 'NaN' for missing data instead of 'null' which would be json convention.
             if self.gower_retrieval:
                 similar_rows = self.retriever_.retrieve(target_row=row, dataset=self.reference_)
                 similar_rows = similar_rows.drop(columns=["gower_distance", "gower_similarity",], errors="ignore",)
-                self.retrieval_history[index] = similar_rows.index.tolist()
                 gower_context = self.data_.dataframetojson(similar_rows)
                 contexts["gower_context"] = gower_context
 
@@ -303,37 +300,42 @@ class LLMImputer(TransformerMixin, BaseEstimator):
                 if len(batch) == self.batch_size:
                     results = self.model_.generate_structured_batch(batch)
                     for item, result in zip(batch, results):
-                        self._process_llm_result(index=item["row_index"], result=result,)
+                        self._process_llm_result(rows_to_process, llm_imputed_df, index=item["row_index"], result=result)
                     batch = []
             else:
                 result = self.model_.generate_structured(**contexts)
-                self._process_llm_result(index=index, result=result,)
+                self._process_llm_result(rows_to_process, llm_imputed_df, index=index, result=result)
 
         if self.batching and batch:  # sending last remaining rows
             results = self.model_.generate_structured_batch(batch)
             for item, result in zip(batch, results):
-                self._process_llm_result(index=item["row_index"], result=result,)
+                self._process_llm_result(rows_to_process, llm_imputed_df, index=item["row_index"], result=result)
 
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ rows in failed_validation_indices are returned with NaN -> optional `fallback` imputer
-        return self.llm_imputed_df
+        if self.failed_rows_:
+            warnings.warn(f"{len(self.failed_rows_)} rows could not be imputed and keep NaN; see failed_rows_ "
+                          f"(first: {self.failed_rows_[:10]})", RuntimeWarning, stacklevel=2)
+        return llm_imputed_df
 
-    def _process_llm_result(self, index, result):
+    def _process_llm_result(self, rows_to_process, imputed, index, result):
+        """Write the LLM's values into the missing cells of row `index` of `imputed` (in place).
+
+        An unusable result (failed validation after all retries, or a missing column absent
+        from the output) is recorded in ``failed_rows_``; that row keeps its NaN.
+        """
         if result is None:
-            self.failed_validation_indices.append(index)
+            self.failed_rows_.append(index)
             return
-        # Get original row using index
-        row = self.rows_to_process.loc[index]  # check in selected row
-        # Find missing columns
+        row = rows_to_process.loc[index]
         missing_columns = row[row.isna()].index.tolist()
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ result keys are the schema field names, which SchemaGenerator.clean_column_name rewrites
-        #          (spaces, leading digits, keywords); columns that were renamed are never found here
-        if any(pd.isna(result.get(col)) for col in missing_columns):  # checks each imputed value
-            print(f"Row {index}: incomplete prediction")
-            self.failed_validation_indices.append(index)
+        # result keys are schema field names -> translate back to the original column names
+        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ still lost: names starting with a digit ("2nd visit" -> "_2nd_visit") are private in
+        #          pydantic and never in the schema; names that clean to the same field ("a b", "a_b") collide -> rows fail
+        values = {col: result.get(self.schema_field_names_[col]) for col in missing_columns}
+        if any(pd.isna(value) for value in values.values()):
+            self.failed_rows_.append(index)
             return
-        # $$$$$$$$$$$$$$$$$$$$$ here $$$$$$$$$$$$$$ writes *every* returned field, so the LLM can overwrite observed cells -> write missing_columns only
-        for column, value in result.items():
-            self.llm_imputed_df.at[index, column] = value
+        for col, value in values.items():  # only the missing cells; observed values are never overwritten
+            imputed.at[index, col] = value
 
     def cleanup(self):
         if getattr(self, "rag_", None) is not None:
