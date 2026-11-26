@@ -463,7 +463,6 @@ hyde:
         * Do NOT discuss relationships only among observed features.
         * Do NOT summarize the entire record.
         * Do NOT introduce unrelated features.
-        * Do NOT generate broad or generic pension information.
         * Do NOT predict or impute {missing_columns}.
         * Do NOT provide a final value for {missing_columns}.
         * Do NOT invent unsupported relationships or rules.
