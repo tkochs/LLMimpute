@@ -1,0 +1,85 @@
+# Mean/mode baseline only: the same datasets, row selection and metrics as config27.yaml, without the LLM.
+#
+#   python src/run_experiment.py configfiles/baselines.yaml      (run from the repo root; paths are relative to it)
+#
+# Only the sections the baseline needs are here; the LLM sections (model, api, prompting, Rag_retrieval, hyde,
+# gower_retrieval, ...) are only read when `chooseimputation method.llm.enabled` is true.
+# Experiment names get a "_mean_mode" suffix so the output folders don't collide with the LLM runs.
+
+experiments:
+- name: "exper370_mean_mode"
+  summary:
+    description: "energy MCAR | seed 1 | mean/mode baseline"
+  injected_dataset_path: "datasets/energy_mcar_seed_1.csv"
+  missing_rate: 0.824
+- name: "exper371_mean_mode"
+  summary:
+    description: "energy MCAR | seed 90 | mean/mode baseline"
+  injected_dataset_path: "datasets/energy_mcar_seed_90.csv"
+  missing_rate: 0.855
+- name: "exper372_mean_mode"
+  summary:
+    description: "energy MCAR | seed 173 | mean/mode baseline"
+  injected_dataset_path: "datasets/energy_mcar_seed_173.csv"
+  missing_rate: 0.818
+- name: "exper373_mean_mode"
+  summary:
+    description: "energy MCAR | seed 193 | mean/mode baseline"
+  injected_dataset_path: "datasets/energy_mcar_seed_193.csv"
+  missing_rate: 0.824
+- name: "exper374_mean_mode"
+  summary:
+    description: "energy MCAR | seed 210 | mean/mode baseline"
+  injected_dataset_path: "datasets/energy_mcar_seed_210.csv"
+  missing_rate: 0.855
+- name: "exper375_mean_mode"
+  summary:
+    description: "energy MCAR | seed 310 | mean/mode baseline"
+  injected_dataset_path: "datasets/energy_mcar_seed_310.csv"
+  missing_rate: 0.818
+
+chooseimputation method:
+  llm:
+    enabled: false
+  mean_mode:
+    enabled: true
+
+dataset:
+  path: "datasets/energy.csv"
+sampling:
+  enabled: false
+  sample_size: 500
+  max_seed: 1000
+missingness:
+  enabled: false   # true -> generate missing values with src/ampute.py instead of reading injected_dataset_path
+  mechanism: "MNAR"   # MCAR | MAR | MNAR
+  missing_rate: 0.1219
+  seed: 90
+  mean: 0.75
+  variance: null
+  mode: "GM"   # GM | min | max
+injected_dataset:
+  enabled: true
+  mechanism: "MCAR"
+
+# which rows are imputed; keep these equal to the LLM config so both are scored on the same rows
+imputation:
+  llm_input_complete_row_fraction: 0
+  max_rows: all
+
+datasetanalysis:
+  enabled: true
+evaluation:
+  enabled: true
+  numerical_metrics:
+    - rmse
+    - mae
+  categorical_metrics:
+    - accuracy
+    - macro_f1
+  normalize_numerical: true
+  mixed_metrics:
+    - gower
+export:
+  enabled: true
+  output_dir_path: "outputs"

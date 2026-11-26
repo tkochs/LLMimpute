@@ -211,6 +211,10 @@ class LLMImputer(TransformerMixin, BaseEstimator):
         # rows of the most recent transform() whose LLM output was unusable (they keep NaN).
         # Created here and only cleared/appended in transform, so transform sets no attributes.
         self.failed_rows_ = []
+        # same pattern: HyDE documents ({"row_index", "missing_columns", "row", "hyde_document"}) and the
+        # indices of the Gower neighbours of each imputed row, for the most recent transform()
+        self.hyde_documents_ = []
+        self.retrieval_history_ = {}
         self._is_fitted = True
         return self
 
@@ -228,6 +232,8 @@ class LLMImputer(TransformerMixin, BaseEstimator):
                                                  max_rows=self.max_rows)
         llm_imputed_df = X.copy()
         self.failed_rows_.clear()
+        self.hyde_documents_.clear()
+        self.retrieval_history_.clear()
         # batch = []  # EXPERIMENTAL (disabled): batching
 
         for index, row in tqdm(rows_to_process.iterrows(), total=len(rows_to_process), desc="LLM Imputation",):
@@ -259,6 +265,8 @@ class LLMImputer(TransformerMixin, BaseEstimator):
 
             if self.hyde:  # getting doc from llm
                 hyde_query = self.model_.generate_hyde(row_text=row_json, missing_columns=", ".join(missing_columns),)
+                self.hyde_documents_.append({"row_index": index, "missing_columns": ", ".join(missing_columns),
+                                             "row": row_json, "hyde_document": hyde_query})
                 if self.verbose:
                     print("=" * 80)
                     print("hypothetical document from LLm")
@@ -283,6 +291,7 @@ class LLMImputer(TransformerMixin, BaseEstimator):
             if self.gower_retrieval:
                 similar_rows = self.retriever_.retrieve(target_row=row, dataset=self.reference_)
                 similar_rows = similar_rows.drop(columns=["gower_distance", "gower_similarity",], errors="ignore",)
+                self.retrieval_history_[index] = similar_rows.index.tolist()
                 gower_context = self.data_.dataframetojson(similar_rows)
                 contexts["gower_context"] = gower_context
 
