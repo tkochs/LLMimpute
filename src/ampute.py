@@ -2,32 +2,6 @@
 Amputation: turn a complete table into one with missing values, so that an imputer can be scored
 against the values that were removed.
 
-Where each piece comes from:
-    MissingValueGenerator               <- inject.py            (swiss_cheese: MCAR / MAR / MNAR)
-    pyampute_amputation                 <- pyamp_injecting.py   (pyampute MultivariateAmputation)
-    MATERNAL_HEALTH_*                   <- pyamp_injecting.py   (encoding, patterns and seeds used for the maternal health data)
-    missingness_report                  <- pyamp_injecting.py   (sections 6.4 - 6.7, the printed statistics)
-    check_amputation                    <- pipeline.py          (prepare_dataset, the checks after amputation)
-
-Comments tagged ORIGINAL: describe what the original code did; comments tagged CHANGED: note every
-difference from it.
-
-ORIGINAL: how pipeline.py (prepare_dataset) produced the table with missing values:
-    1. load the dataset and drop every row that already had a missing value (a.dropna(axis=0)),
-       so the remaining table is a complete ground truth.
-    2. optionally sample 500 rows (sampling.enabled; bestseed.DatasetSampler picks the seed whose sample is
-       closest to the full table in mean / std / category frequencies). Disabled in config27.
-    3. make the missing values in one of two ways:
-         missingness.enabled: true      -> MissingValueGenerator (swiss_cheese), during the run
-         injected_dataset.enabled: true -> load a CSV that was amputated beforehand
-       config27 used the second way (missingness.enabled: false) with the files energy_mcar_seed_*.csv.
-       The script that wrote those files is not in the repo (pyamp_injecting.py only writes
-       Maternal_pyampute_MNAR_seed*.csv), so the code does not show which method produced them.
-       The per-experiment `missing_rate` values in config27 (0.824, 0.855, ...) were only copied into the
-       result export; they were not used to amputate.
-    4. check the result against the ground truth (check_amputation below).
-CHANGED: steps 1 and 2 are data preparation and are not in this file.
-
 Usage:
     X_missing = MissingValueGenerator(mechanism="MCAR", missing_rate=0.2, seed=1).inject(X)
     X_missing = pyampute_amputation(X, MATERNAL_HEALTH_PATTERNS, seed=17,
